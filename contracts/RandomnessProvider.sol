@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./interfaces/IRandomnessProvider.sol";
 import "./interfaces/IRouletteEngine.sol";
 
@@ -14,7 +15,7 @@ import "./interfaces/IRouletteEngine.sol";
  *         El VRF Coordinator llama a fulfillRandomWords, que a su vez
  *         invoca RouletteEngine.fulfillRandomness.
  */
-contract RandomnessProvider is VRFConsumerBaseV2, IRandomnessProvider {
+contract RandomnessProvider is VRFConsumerBaseV2, AccessControl, IRandomnessProvider {
     VRFCoordinatorV2Interface private immutable _coordinator;
 
     bytes32 private _keyHash;
@@ -31,12 +32,15 @@ contract RandomnessProvider is VRFConsumerBaseV2, IRandomnessProvider {
     event RandomnessRequested(uint256 indexed gameId, uint256 indexed requestId);
 
     constructor(
+        address admin,
         address vrfCoordinator,
         bytes32 keyHash,
         uint64 subscriptionId,
         uint32 callbackGasLimit,
         uint16 requestConfirmations
     ) VRFConsumerBaseV2(vrfCoordinator) {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+
         _coordinator = VRFCoordinatorV2Interface(vrfCoordinator);
         _keyHash = keyHash;
         _subscriptionId = subscriptionId;
@@ -44,7 +48,7 @@ contract RandomnessProvider is VRFConsumerBaseV2, IRandomnessProvider {
         _requestConfirmations = requestConfirmations;
     }
 
-    function setConsumer(address consumer) external {
+    function setConsumer(address consumer) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(consumer != address(0), "Invalid consumer");
         _consumer = consumer;
         emit ConsumerUpdated(consumer);

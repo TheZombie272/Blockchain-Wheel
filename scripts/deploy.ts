@@ -51,6 +51,7 @@ async function main() {
   console.log("\n--- Deploying RandomnessProvider ---");
   const RandomnessProvider = await ethers.getContractFactory("RandomnessProvider");
   const randomnessProvider = await RandomnessProvider.deploy(
+    deployer.address,
     VRF_COORDINATOR,
     VRF_KEY_HASH,
     VRF_SUBSCRIPTION_ID,

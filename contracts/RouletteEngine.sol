@@ -5,6 +5,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./interfaces/IConfig.sol";
@@ -30,13 +31,17 @@ contract RouletteEngine is
     Initializable,
     UUPSUpgradeable,
     AccessControlUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable
 {
     using SafeERC20 for IERC20;
 
     // ==================== TIPOS ====================
 
     enum GameState { OPEN, LOCKED, DRAWING, PAYOUT, CLOSED }
+
+    uint256 public constant MAX_RETRIES = 3;
+    uint256 public constant RETRY_COOLDOWN = 30;
 
     struct Game {
         uint256 id;
@@ -52,6 +57,8 @@ contract RouletteEngine is
         uint256 feePercentage;
         address randomnessProvider;
         bool exists;
+        uint256 retryCount;
+        uint256 lastRetryTimestamp;
     }
 
     struct PlayerEntry {
@@ -134,6 +141,7 @@ contract RouletteEngine is
 
     event GameCleaned(uint256 indexed gameId);
     event GameRefunded(uint256 indexed gameId);
+    event RandomnessRetried(uint256 indexed gameId, uint256 retryCount);
 
     event ConfigUpdated(address indexed config);
     event RandomnessProviderUpdated(address indexed provider);
@@ -169,6 +177,7 @@ contract RouletteEngine is
         __UUPSUpgradeable_init();
         __AccessControl_init();
         __ReentrancyGuard_init();
+        __Pausable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MANAGER_ROLE, admin);
@@ -220,6 +229,7 @@ contract RouletteEngine is
     ) external onlyManager {
         BetLevel storage level = _betLevels[betLevel];
         require(level.exists, "RE: level not found");
+        require(level.queueLength == 0, "RE: queue not empty");
         require(betAmount > 0, "RE: invalid bet amount");
         require(maxPlayers >= 2, "RE: min 2 players");
         require(maxPlayers <= 100, "RE: max 100 players");
@@ -264,6 +274,14 @@ contract RouletteEngine is
         emit TreasuryUpdated(treasury);
     }
 
+    function pause() external onlyManager {
+        _pause();
+    }
+
+    function unpause() external onlyManager {
+        _unpause();
+    }
+
     // ==================== JUGADORES ====================
 
     /**
@@ -272,7 +290,7 @@ contract RouletteEngine is
      *         Si la cola se llena, se crea y procesa la partida automáticamente.
      * @param betLevel Nivel de apuesta al cual unirse.
      */
-    function joinQueue(uint256 betLevel) external nonReentrant {
+    function joinQueue(uint256 betLevel) external nonReentrant whenNotPaused {
         BetLevel storage level = _betLevels[betLevel];
         require(level.exists, "RE: invalid level");
         require(level.queueLength < level.maxPlayers, "RE: queue full");
@@ -296,7 +314,7 @@ contract RouletteEngine is
      *         La partida debe estar en estado OPEN.
      * @param gameId ID de la partida.
      */
-    function joinGame(uint256 gameId) external nonReentrant {
+    function joinGame(uint256 gameId) external nonReentrant whenNotPaused {
         Game storage game = _games[gameId];
         require(game.exists, "RE: game not found");
         require(game.state == GameState.OPEN, "RE: game not open");
@@ -343,6 +361,8 @@ contract RouletteEngine is
         game.feePercentage = _config.feePercentage();
         game.randomnessProvider = address(_randomnessProvider);
         game.exists = true;
+        game.retryCount = 0;
+        game.lastRetryTimestamp = 0;
 
         _activeGames++;
 
@@ -387,6 +407,7 @@ contract RouletteEngine is
         emit GameLocked(gameId);
 
         game.state = GameState.DRAWING;
+        game.lastRetryTimestamp = block.timestamp;
         uint256 requestId = _randomnessProvider.requestRandom(gameId);
         game.requestId = requestId;
 
@@ -499,23 +520,29 @@ contract RouletteEngine is
     }
 
     /**
-     * @notice Fuerza el sorteo de una partida atascada usando datos
-     *         de la blockchain como fuente de aleatoriedad de respaldo.
-     *         Último recurso si VRF falla.
+     * @notice Reintenta la solicitud de aleatoriedad VRF para una partida
+     *         atascada en estado DRAWING. Hasta MAX_RETRIES intentos con
+     *         un cooldown de RETRY_BLOCK_COOLDOWN bloques entre cada uno.
+     *         Si se agotan los retries, solo queda refundGame.
      * @param gameId ID de la partida.
      */
-    function forceDraw(uint256 gameId) external onlyManager {
+    function retryRandom(uint256 gameId) external onlyManager {
         Game storage game = _games[gameId];
         require(game.exists, "RE: not found");
         require(game.state == GameState.DRAWING, "RE: not drawing");
-
-        uint256 pseudoRandom = uint256(
-            keccak256(abi.encodePacked(
-                block.timestamp, block.prevrandao, gameId, game.playerCount
-            ))
+        require(game.retryCount < MAX_RETRIES, "RE: max retries reached");
+        require(
+            block.timestamp >= game.lastRetryTimestamp + RETRY_COOLDOWN,
+            "RE: cooldown not met"
         );
 
-        _resolveGame(gameId, pseudoRandom);
+        game.retryCount++;
+        game.lastRetryTimestamp = block.timestamp;
+        uint256 requestId = _randomnessProvider.requestRandom(gameId);
+        game.requestId = requestId;
+
+        emit RandomnessRequested(gameId, requestId);
+        emit RandomnessRetried(gameId, game.retryCount);
     }
 
     // ==================== UUPS ====================
