@@ -42,6 +42,7 @@ contract RouletteEngine is
 
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 30;
+    uint256 public drawingTimeout;
 
     struct Game {
         uint256 id;
@@ -145,7 +146,14 @@ contract RouletteEngine is
 
     event GameCleaned(uint256 indexed gameId);
     event GameRefunded(uint256 indexed gameId);
+    event GameRefundedByPlayer(uint256 indexed gameId, address indexed player);
     event RandomnessRetried(uint256 indexed gameId, uint256 retryCount);
+
+    event PlayerLeftQueue(
+        uint256 indexed betLevel,
+        address indexed player,
+        uint256 amount
+    );
 
     event ConfigUpdated(address indexed config);
     event RandomnessProviderUpdated(address indexed provider);
@@ -190,6 +198,7 @@ contract RouletteEngine is
         _randomnessProvider = IRandomnessProvider(randomnessProvider);
         _treasury = ITreasury(treasury);
         _nextGameId = 1;
+        drawingTimeout = 7200;
     }
 
     // ==================== ADMIN / GESTIÓN ====================
@@ -296,6 +305,10 @@ contract RouletteEngine is
         _unpause();
     }
 
+    function setDrawingTimeout(uint256 timeout) external onlyManager {
+        drawingTimeout = timeout;
+    }
+
     // ==================== JUGADORES ====================
 
     /**
@@ -338,6 +351,37 @@ contract RouletteEngine is
         if (level.queueLength == level.maxPlayers) {
             _startGameFromQueue(betLevel);
         }
+    }
+
+    /**
+     * @notice Un jugador abandona la cola y recupera sus tokens.
+     *         Solo funciona mientras la cola sigue activa
+     *         (no se ha convertido en partida aún).
+     * @param betLevel Nivel de apuesta.
+     */
+    function leaveQueue(uint256 betLevel) external nonReentrant {
+        uint256 count = _playerEntryCount[betLevel][msg.sender];
+        require(count > 0, "RE: not in queue");
+
+        BetLevel storage level = _betLevels[betLevel];
+        uint256 totalRefund = level.betAmount * count;
+
+        address[] storage queue = _queues[betLevel];
+        uint256 remaining = count;
+        for (uint256 i = queue.length; i > 0 && remaining > 0; i--) {
+            if (queue[i - 1] == msg.sender) {
+                queue[i - 1] = queue[queue.length - 1];
+                queue.pop();
+                remaining--;
+            }
+        }
+
+        level.queueLength -= count;
+        delete _playerEntryCount[betLevel][msg.sender];
+
+        IERC20(_config.tokenAddress()).safeTransfer(msg.sender, totalRefund);
+
+        emit PlayerLeftQueue(betLevel, msg.sender, count);
     }
 
     /**
@@ -575,6 +619,34 @@ contract RouletteEngine is
 
         emit RandomnessRequested(gameId, requestId);
         emit RandomnessRetried(gameId, game.retryCount);
+    }
+
+    /**
+     * @notice Cualquier jugador puede reembolsar a todos los participantes
+     *         si la partida lleva más de drawingTimeout en estado DRAWING
+     *         (VRF nunca respondió). No requiere rol de admin.
+     * @param gameId ID de la partida.
+     */
+    function playerRefund(uint256 gameId) external nonReentrant {
+        Game storage game = _games[gameId];
+        require(game.exists, "RE: not found");
+        require(game.state == GameState.DRAWING, "RE: not drawing");
+        require(
+            block.timestamp >= game.lastRetryTimestamp + drawingTimeout,
+            "RE: timeout not met"
+        );
+
+        IERC20 token = IERC20(game.token);
+        PlayerEntry[] storage players = _gamePlayers[gameId];
+        for (uint256 i = 0; i < players.length; i++) {
+            token.safeTransfer(players[i].player, players[i].betAmount);
+        }
+
+        game.state = GameState.CLOSED;
+        _activeGames--;
+        _cleanGame(gameId);
+
+        emit GameRefundedByPlayer(gameId, msg.sender);
     }
 
     // ==================== UUPS ====================
