@@ -78,6 +78,7 @@ contract RouletteEngine is
     // ==================== ROLES ====================
 
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
     // ==================== STORAGE ====================
 
@@ -166,6 +167,16 @@ contract RouletteEngine is
         _;
     }
 
+    modifier onlyAdmin() {
+        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "RE: not admin");
+        _;
+    }
+
+    modifier onlyEmergency() {
+        require(hasRole(EMERGENCY_ROLE, msg.sender), "RE: not emergency");
+        _;
+    }
+
     // ==================== CONSTRUCTOR ====================
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -193,6 +204,7 @@ contract RouletteEngine is
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MANAGER_ROLE, admin);
+        _grantRole(EMERGENCY_ROLE, admin);
 
         _config = IConfig(config);
         _randomnessProvider = IRandomnessProvider(randomnessProvider);
@@ -282,26 +294,26 @@ contract RouletteEngine is
         _createGame(betLevel, level.betAmount, maxPlayers, prizePool);
     }
 
-    function setConfig(address config) external onlyManager {
+    function setConfig(address config) external onlyAdmin {
         _config = IConfig(config);
         emit ConfigUpdated(config);
     }
 
-    function setRandomnessProvider(address provider) external onlyManager {
+    function setRandomnessProvider(address provider) external onlyAdmin {
         _randomnessProvider = IRandomnessProvider(provider);
         emit RandomnessProviderUpdated(provider);
     }
 
-    function setTreasury(address treasury) external onlyManager {
+    function setTreasury(address treasury) external onlyAdmin {
         _treasury = ITreasury(treasury);
         emit TreasuryUpdated(treasury);
     }
 
-    function pause() external onlyManager {
+    function pause() external onlyEmergency {
         _pause();
     }
 
-    function unpause() external onlyManager {
+    function unpause() external onlyEmergency {
         _unpause();
     }
 
@@ -574,7 +586,7 @@ contract RouletteEngine is
      *         (p. ej. VRF nunca responde). Solo para estados LOCKED o DRAWING.
      * @param gameId ID de la partida.
      */
-    function refundGame(uint256 gameId) external onlyManager {
+    function refundGame(uint256 gameId) external onlyAdmin {
         Game storage game = _games[gameId];
         require(game.exists, "RE: not found");
         require(

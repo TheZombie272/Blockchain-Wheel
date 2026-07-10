@@ -216,7 +216,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should only allow manager to pause", async () => {
       const { engine, other } = await loadFixture(deployFixture);
-      await expect(engine.connect(other).pause()).to.be.revertedWith("RE: not manager");
+      await expect(engine.connect(other).pause()).to.be.revertedWith("RE: not emergency");
     });
   });
 
@@ -470,22 +470,50 @@ describe("RouletteEngine (UUPS proxy)", () => {
   /**
    * **Access Control** — Verifica que las funciones administrativas
    * (setConfig, setRandomnessProvider, setTreasury) solo puedan ser
-   * ejecutadas por MANAGER_ROLE.
+   * ejecutadas por DEFAULT_ADMIN_ROLE.
    */
   describe("Access Control", () => {
-    it("should reject non-manager from setConfig", async () => {
+    it("should reject non-admin from setConfig", async () => {
       const { engine, other } = await loadFixture(deployFixture);
-      await expect(engine.connect(other).setConfig(other.address)).to.be.revertedWith("RE: not manager");
+      await expect(engine.connect(other).setConfig(other.address)).to.be.revertedWith("RE: not admin");
     });
 
-    it("should reject non-manager from setRandomnessProvider", async () => {
+    it("should reject non-admin from setRandomnessProvider", async () => {
       const { engine, other } = await loadFixture(deployFixture);
-      await expect(engine.connect(other).setRandomnessProvider(other.address)).to.be.revertedWith("RE: not manager");
+      await expect(engine.connect(other).setRandomnessProvider(other.address)).to.be.revertedWith("RE: not admin");
     });
 
-    it("should reject non-manager from setTreasury", async () => {
+    it("should reject non-admin from setTreasury", async () => {
       const { engine, other } = await loadFixture(deployFixture);
-      await expect(engine.connect(other).setTreasury(other.address)).to.be.revertedWith("RE: not manager");
+      await expect(engine.connect(other).setTreasury(other.address)).to.be.revertedWith("RE: not admin");
+    });
+  });
+
+  /**
+   * **Emergency Role** — Verifica que EMERGENCY_ROLE pueda pausar/reanudar
+   * y que un usuario sin ese rol no pueda.
+   */
+  describe("Emergency Role", () => {
+    it("should allow emergency to pause and unpause", async () => {
+      const { engine, admin, player1 } = await loadFixture(deployFixture);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 3, 1);
+
+      await engine.connect(admin).pause();
+      await expect(engine.connect(player1).joinQueue(1)).to.be.reverted;
+
+      await engine.connect(admin).unpause();
+      await expect(engine.connect(player1).joinQueue(1)).to.not.be.reverted;
+    });
+
+    it("should reject non-emergency from pausing", async () => {
+      const { engine, manager } = await loadFixture(deployFixture);
+      await expect(engine.connect(manager).pause()).to.be.revertedWith("RE: not emergency");
+    });
+
+    it("should reject non-emergency from unpausing", async () => {
+      const { engine, admin, manager } = await loadFixture(deployFixture);
+      await engine.connect(admin).pause();
+      await expect(engine.connect(manager).unpause()).to.be.revertedWith("RE: not emergency");
     });
   });
 
