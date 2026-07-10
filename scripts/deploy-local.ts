@@ -69,9 +69,10 @@ async function main() {
     { level: 5, amount: ethers.parseUnits("5", 18), players: 3 },
   ];
   for (const l of levels) {
-    const tx = await engineContract.createBetLevel(l.level, l.amount, l.players);
+    const maxEntries = Math.floor(l.players / 2);
+    const tx = await engineContract.createBetLevel(l.level, l.amount, l.players, maxEntries);
     await tx.wait();
-    console.log(`Bet level ${l.level}: ${ethers.formatUnits(l.amount, 18)} token(s), ${l.players} max players`);
+    console.log(`Bet level ${l.level}: ${ethers.formatUnits(l.amount, 18)} token(s), ${l.players} max players, ${maxEntries} max entries per player`);
   }
 
   // Mintear tokens a cuentas de prueba para jugar

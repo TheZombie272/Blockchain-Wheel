@@ -96,9 +96,10 @@ async function main() {
   ];
 
   for (const l of levels) {
-    const tx = await engineContract.createBetLevel(l.level, l.amount, l.players);
+    const maxEntries = Math.floor(l.players / 2);
+    const tx = await engineContract.createBetLevel(l.level, l.amount, l.players, maxEntries);
     await tx.wait();
-    console.log(`Bet level ${l.level} created: ${ethers.formatUnits(l.amount, 18)} token(s), ${l.players} max players`);
+    console.log(`Bet level ${l.level} created: ${ethers.formatUnits(l.amount, 18)} token(s), ${l.players} max players, ${maxEntries} max entries per player`);
   }
 
   // ==================== RESUMEN ====================

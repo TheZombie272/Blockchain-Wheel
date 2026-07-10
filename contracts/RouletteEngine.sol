@@ -70,6 +70,7 @@ contract RouletteEngine is
         uint256 betAmount;
         uint256 maxPlayers;
         uint256 queueLength;
+        uint256 maxEntriesPerPlayer;
         bool exists;
     }
 
@@ -87,6 +88,7 @@ contract RouletteEngine is
     mapping(uint256 => Game) private _games;
     mapping(uint256 => PlayerEntry[]) private _gamePlayers;
     mapping(uint256 => mapping(address => uint256)) private _playerIndex;
+    mapping(uint256 => mapping(address => uint256)) private _playerEntryCount;
 
     IConfig private _config;
     IRandomnessProvider private _randomnessProvider;
@@ -97,13 +99,15 @@ contract RouletteEngine is
     event BetLevelCreated(
         uint256 indexed betLevel,
         uint256 betAmount,
-        uint256 maxPlayers
+        uint256 maxPlayers,
+        uint256 maxEntriesPerPlayer
     );
 
     event BetLevelUpdated(
         uint256 indexed betLevel,
         uint256 betAmount,
-        uint256 maxPlayers
+        uint256 maxPlayers,
+        uint256 maxEntriesPerPlayer
     );
 
     event GameCreated(
@@ -193,39 +197,46 @@ contract RouletteEngine is
     /**
      * @notice Crea un nuevo nivel de apuesta con cola automática.
      * @param betLevel Identificador del nivel (ej. 1, 5, 10).
-     * @param betAmount Monto exacto del token requerido para participar.
-     * @param maxPlayers Número máximo de jugadores por partida (mín. 2, máx. 100).
+     * @param betAmount Monto exacto del token requerido por entrada.
+     * @param maxPlayers Número de posiciones totales por partida (mín. 2, máx. 100).
+     * @param maxEntriesPerPlayer Máximo de entradas que un mismo jugador puede comprar (mín. 1).
      */
     function createBetLevel(
         uint256 betLevel,
         uint256 betAmount,
-        uint256 maxPlayers
+        uint256 maxPlayers,
+        uint256 maxEntriesPerPlayer
     ) external onlyManager {
         require(!_betLevels[betLevel].exists, "RE: level exists");
         require(betAmount > 0, "RE: invalid bet amount");
         require(maxPlayers >= 2, "RE: min 2 players");
         require(maxPlayers <= 100, "RE: max 100 players");
+        require(maxEntriesPerPlayer >= 1, "RE: min 1 entry");
+        require(maxEntriesPerPlayer <= maxPlayers, "RE: entries exceed maxPlayers");
 
         _betLevels[betLevel] = BetLevel({
             betAmount: betAmount,
             maxPlayers: maxPlayers,
             queueLength: 0,
+            maxEntriesPerPlayer: maxEntriesPerPlayer,
             exists: true
         });
 
-        emit BetLevelCreated(betLevel, betAmount, maxPlayers);
+        emit BetLevelCreated(betLevel, betAmount, maxPlayers, maxEntriesPerPlayer);
     }
 
     /**
      * @notice Actualiza los parámetros de un nivel de apuesta existente.
      * @param betLevel Identificador del nivel.
-     * @param betAmount Nuevo monto de apuesta.
-     * @param maxPlayers Nuevo límite de jugadores.
+     * @param betAmount Nuevo monto de apuesta por entrada.
+     * @param maxPlayers Nuevo límite de posiciones totales.
+     * @param maxEntriesPerPlayer Nuevo límite de entradas por jugador.
      */
     function updateBetLevel(
         uint256 betLevel,
         uint256 betAmount,
-        uint256 maxPlayers
+        uint256 maxPlayers,
+        uint256 maxEntriesPerPlayer
     ) external onlyManager {
         BetLevel storage level = _betLevels[betLevel];
         require(level.exists, "RE: level not found");
@@ -233,11 +244,14 @@ contract RouletteEngine is
         require(betAmount > 0, "RE: invalid bet amount");
         require(maxPlayers >= 2, "RE: min 2 players");
         require(maxPlayers <= 100, "RE: max 100 players");
+        require(maxEntriesPerPlayer >= 1, "RE: min 1 entry");
+        require(maxEntriesPerPlayer <= maxPlayers, "RE: entries exceed maxPlayers");
 
         level.betAmount = betAmount;
         level.maxPlayers = maxPlayers;
+        level.maxEntriesPerPlayer = maxEntriesPerPlayer;
 
-        emit BetLevelUpdated(betLevel, betAmount, maxPlayers);
+        emit BetLevelUpdated(betLevel, betAmount, maxPlayers, maxEntriesPerPlayer);
     }
 
     /**
@@ -285,24 +299,41 @@ contract RouletteEngine is
     // ==================== JUGADORES ====================
 
     /**
-     * @notice Un jugador se une a la cola de un nivel de apuesta.
-     *         Transfiere el token inmediatamente.
-     *         Si la cola se llena, se crea y procesa la partida automáticamente.
-     * @param betLevel Nivel de apuesta al cual unirse.
+     * @notice Un jugador se une a la cola (1 entrada).
+     * @param betLevel Nivel de apuesta.
      */
     function joinQueue(uint256 betLevel) external nonReentrant whenNotPaused {
+        _joinQueue(betLevel, 1);
+    }
+
+    /**
+     * @notice Un jugador se une a la cola con múltiples entradas.
+     *         Transfiere betAmount * amount tokens inmediatamente.
+     *         Si la cola se llena, se crea y procesa la partida automáticamente.
+     * @param betLevel Nivel de apuesta.
+     * @param amount Número de entradas a comprar.
+     */
+    function joinQueue(uint256 betLevel, uint256 amount) external nonReentrant whenNotPaused {
+        _joinQueue(betLevel, amount);
+    }
+
+    function _joinQueue(uint256 betLevel, uint256 amount) internal {
         BetLevel storage level = _betLevels[betLevel];
         require(level.exists, "RE: invalid level");
-        require(level.queueLength < level.maxPlayers, "RE: queue full");
+        require(level.queueLength + amount <= level.maxPlayers, "RE: queue full");
+        require(_playerEntryCount[betLevel][msg.sender] + amount <= level.maxEntriesPerPlayer, "RE: max entries exceeded");
 
         IERC20(_config.tokenAddress()).safeTransferFrom(
-            msg.sender, address(this), level.betAmount
+            msg.sender, address(this), level.betAmount * amount
         );
 
-        _queues[betLevel].push(msg.sender);
-        level.queueLength++;
+        for (uint256 i = 0; i < amount; i++) {
+            _queues[betLevel].push(msg.sender);
+        }
+        _playerEntryCount[betLevel][msg.sender] += amount;
+        level.queueLength += amount;
 
-        emit PlayerJoined(0, msg.sender, level.betAmount);
+        emit PlayerJoined(0, msg.sender, level.betAmount * amount);
 
         if (level.queueLength == level.maxPlayers) {
             _startGameFromQueue(betLevel);
@@ -390,6 +421,7 @@ contract RouletteEngine is
                 betAmount: level.betAmount
             }));
             _playerIndex[gameId][player] = _gamePlayers[gameId].length;
+            delete _playerEntryCount[betLevel][player];
             game.playerCount++;
         }
 

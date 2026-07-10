@@ -124,53 +124,56 @@ describe("RouletteEngine (UUPS proxy)", () => {
       const betAmount = ethers.parseEther("10");
       const maxPlayers = 5;
 
-      await expect(engine.connect(admin).createBetLevel(level, betAmount, maxPlayers))
+      const maxEntries = Math.floor(maxPlayers / 2);
+      await expect(engine.connect(admin).createBetLevel(level, betAmount, maxPlayers, maxEntries))
         .to.emit(engine, "BetLevelCreated")
-        .withArgs(level, betAmount, maxPlayers);
+        .withArgs(level, betAmount, maxPlayers, maxEntries);
 
       const stored = await engine.getBetLevel(level);
       expect(stored.betAmount).to.equal(betAmount);
       expect(stored.maxPlayers).to.equal(maxPlayers);
       expect(stored.queueLength).to.equal(0);
+      expect(stored.maxEntriesPerPlayer).to.equal(maxEntries);
       expect(stored.exists).to.be.true;
     });
 
     it("should reject creating duplicate bet level", async () => {
       const { engine, admin } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5);
-      await expect(engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5))
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5, 2);
+      await expect(engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5, 2))
         .to.be.revertedWith("RE: level exists");
     });
 
     it("should reject create with invalid params", async () => {
       const { engine, admin } = await loadFixture(deployFixture);
-      await expect(engine.connect(admin).createBetLevel(1, 0, 5)).to.be.revertedWith("RE: invalid bet amount");
-      await expect(engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 1)).to.be.revertedWith("RE: min 2 players");
-      await expect(engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 101)).to.be.revertedWith("RE: max 100 players");
+      await expect(engine.connect(admin).createBetLevel(1, 0, 5, 2)).to.be.revertedWith("RE: invalid bet amount");
+      await expect(engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 1, 1)).to.be.revertedWith("RE: min 2 players");
+      await expect(engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 101, 50)).to.be.revertedWith("RE: max 100 players");
     });
 
     it("should reject non-manager from creating bet level", async () => {
       const { engine, other } = await loadFixture(deployFixture);
-      await expect(engine.connect(other).createBetLevel(1, ethers.parseEther("10"), 5))
+      await expect(engine.connect(other).createBetLevel(1, ethers.parseEther("10"), 5, 2))
         .to.be.revertedWith("RE: not manager");
     });
 
     it("should update bet level when queue is empty", async () => {
       const { engine, admin } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5);
-      await expect(engine.connect(admin).updateBetLevel(1, ethers.parseEther("20"), 10))
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5, 2);
+      await expect(engine.connect(admin).updateBetLevel(1, ethers.parseEther("20"), 10, 5))
         .to.emit(engine, "BetLevelUpdated")
-        .withArgs(1, ethers.parseEther("20"), 10);
+        .withArgs(1, ethers.parseEther("20"), 10, 5);
       const stored = await engine.getBetLevel(1);
       expect(stored.betAmount).to.equal(ethers.parseEther("20"));
       expect(stored.maxPlayers).to.equal(10);
+      expect(stored.maxEntriesPerPlayer).to.equal(5);
     });
 
     it("should reject update when queue is not empty (security fix)", async () => {
       const { engine, admin, player1, token } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 3);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 3, 1);
       await engine.connect(player1).joinQueue(1);
-      await expect(engine.connect(admin).updateBetLevel(1, ethers.parseEther("20"), 5))
+      await expect(engine.connect(admin).updateBetLevel(1, ethers.parseEther("20"), 5, 2))
         .to.be.revertedWith("RE: queue not empty");
     });
   });
@@ -184,7 +187,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
   describe("Pause Mechanism", () => {
     it("should prevent join when paused", async () => {
       const { engine, admin, player1 } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 3);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 3, 1);
 
       await engine.connect(admin).pause();
       await expect(engine.connect(player1).joinQueue(1)).to.be.reverted;
@@ -195,7 +198,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should allow emergency functions while paused", async () => {
       const { engine, admin, player1, player2, player3, mockVRF } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
@@ -227,7 +230,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
   describe("Game Lifecycle (queue → VRF → resolve)", () => {
     it("should join queue, auto-create game when full, and resolve via VRF", async () => {
       const { engine, admin, player1, player2, mockVRF, token } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
@@ -247,7 +250,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should distribute correct prize and fee", async () => {
       const { engine, admin, player1, player2, mockVRF, token, treasury } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("100"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("100"), 2, 1);
 
       const balBefore1 = await token.balanceOf(player1.address);
       const balBefore2 = await token.balanceOf(player2.address);
@@ -280,7 +283,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should not allow double resolution", async () => {
       const { engine, admin, player1, player2, mockVRF } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
@@ -298,7 +301,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
   describe("Manual Game Creation", () => {
     it("should create game and allow players to join manually", async () => {
       const { engine, admin, player1, player2, player3 } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5, 2);
       await engine.connect(admin).createGame(1, 3);
 
       const gameId = 1;
@@ -328,7 +331,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
   describe("Emergency: refundGame", () => {
     it("should refund all players when game is stuck in DRAWING", async () => {
       const { engine, admin, player1, player2, token } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       const balBefore1 = await token.balanceOf(player1.address);
       const balBefore2 = await token.balanceOf(player2.address);
@@ -348,7 +351,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should reject refund when game is already resolved", async () => {
       const { engine, admin, player1, player2, mockVRF } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
       await mockVRF.fulfill(1, 123);
@@ -373,7 +376,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
   describe("Emergency: retryRandom", () => {
     it("should retry VRF request when game is stuck in DRAWING", async () => {
       const { engine, admin, player1, player2, mockVRF } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
@@ -389,7 +392,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should reject retry beyond MAX_RETRIES", async () => {
       const { engine, admin, player1, player2 } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
@@ -409,7 +412,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should reject retry when cooldown not met", async () => {
       const { engine, admin, player1, player2 } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
 
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
@@ -419,7 +422,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should resolve game after retry via VRF", async () => {
       const { engine, admin, player1, player2, mockVRF } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
 
@@ -453,7 +456,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should reject upgrade when active games exist", async () => {
       const { engine, admin, player1, player2 } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
 
@@ -495,7 +498,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
   describe("cleanGame", () => {
     it("should clean player data after game is closed", async () => {
       const { engine, admin, player1, player2, mockVRF } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 2, 1);
       await engine.connect(player1).joinQueue(1);
       await engine.connect(player2).joinQueue(1);
       await mockVRF.fulfill(1, 123);
@@ -505,7 +508,7 @@ describe("RouletteEngine (UUPS proxy)", () => {
 
     it("should reject cleaning non-closed game", async () => {
       const { engine, admin } = await loadFixture(deployFixture);
-      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5);
+      await engine.connect(admin).createBetLevel(1, ethers.parseEther("10"), 5, 2);
       await engine.connect(admin).createGame(1, 3);
 
       await expect(engine.cleanGame(1)).to.be.revertedWith("RE: not closed");
